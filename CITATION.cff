@@ -1,0 +1,43 @@
+cff-version: 1.2.0
+message: "If you use this software in your research, please cite the associated paper as below."
+title: "COSMO-INR: Complex Sinusoidal Modulation for Implicit Neural Representations"
+authors:
+  - family-names: "Thennakoon"
+    given-names: "Pandula"
+  - family-names: "Ranasinghe"
+    given-names: "Avishka"
+  - family-names: "De Silva"
+    given-names: "Mario"
+  - family-names: "Epakanda"
+    given-names: "Buwaneka"
+  - family-names: "Godaliyadda"
+    given-names: "Roshan"
+  - family-names: "Ekanayake"
+    given-names: "Parakrama"
+  - family-names: "Herath"
+    given-names: "Vijitha"
+url: "https://arxiv.org/abs/2505.11640"
+preferred-citation:
+  type: article
+  title: "COSMO-INR: Complex Sinusoidal Modulation for Implicit Neural Representations"
+  authors:
+    - family-names: "Thennakoon"
+      given-names: "Pandula"
+    - family-names: "Ranasinghe"
+      given-names: "Avishka"
+    - family-names: "De Silva"
+      given-names: "Mario"
+    - family-names: "Epakanda"
+      given-names: "Buwaneka"
+    - family-names: "Godaliyadda"
+      given-names: "Roshan"
+    - family-names: "Ekanayake"
+      given-names: "Parakrama"
+    - family-names: "Herath"
+      given-names: "Vijitha"
+  year: 2025
+  url: "https://arxiv.org/abs/2505.11640"
+  identifiers:
+    - type: other
+      value: "arXiv:2505.11640"
+      description: "The arXiv preprint identifier"
