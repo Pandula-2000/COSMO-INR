@@ -96,7 +96,7 @@ model =INR(args.inr_model).run(in_features=2,
 init_time = time.time() #timearray setup
 
 # Optimizer setup
-if args.inr_model == 'wire' or  or args.inr_model == 'BandRC':
+if args.inr_model == 'wire' or args.inr_model == 'BandRC':
     args.lr = args.lr * min(1, args.maxpoints / (H * W))
 optim = torch.optim.Adam(lr=args.lr, params=model.parameters())
 scheduler = lr_scheduler.LambdaLR(optim, lambda x: args.scheduler_b ** min(x / args.niters, 1))
@@ -113,82 +113,95 @@ gt = torch.tensor(im).reshape(H * W, 3)[None, ...].to(device)
 # Initialize a tensor for reconstructed data
 rec = torch.zeros_like(gt)
 
-for step in tqdm(range(args.niters)):
-    # Randomize the order of data points for each iteration
+pbar = tqdm(range(args.niters))
+for step in pbar:
     indices = torch.randperm(H*W)
 
-    # Process data points in batches
     for b_idx in range(0, H*W, args.maxpoints):
         b_indices = indices[b_idx:min(H*W, b_idx+args.maxpoints)]
         b_coords = coords[:, b_indices, ...].to(device)
         b_indices = b_indices.to(device)
 
-        # Calculate model output
-        if args.inr_model == 'incode' :
+        if args.inr_model == 'incode':
             model_output, coef = model(b_coords)
         else:
             model_output = model(b_coords)
 
-        # Update the reconstructed data
         with torch.no_grad():
             rec[:, b_indices, :] = model_output
 
-        # Calculate the output loss
         output_loss = ((model_output - gt[:, b_indices, :])**2).mean()
 
         if args.inr_model == 'incode':
-            # Calculate regularization loss for 'incode' model
             a_coef, b_coef, c_coef, d_coef = coef[0]
             reg_loss = args.a_coef * torch.relu(-a_coef) + \
                        args.b_coef * torch.relu(-b_coef) + \
                        args.c_coef * torch.relu(-c_coef) + \
                        args.d_coef * torch.relu(-d_coef)
-
-            # Total loss for 'incode' model
             loss = output_loss + reg_loss
         else:
-            # Total loss for other models
             loss = output_loss
 
-        # Perform backpropagation and update model parameters
         optim.zero_grad()
         loss.backward()
         optim.step()
 
-
-    time_array[step] = time.time() - init_time #timearray setup (step )
-    # Calculate PSNR
+    time_array[step] = time.time() - init_time
+    
     with torch.no_grad():
         mse_array[step] = ((gt - rec)**2).mean().item()
         psnr = -10*torch.log10(mse_array[step])
         psnr_values.append(psnr.item())
+        
+        # Extract the current step's constants before appending to the list
+        current_consts = model.prior.consts.detach().cpu().numpy()
+        consts.append(current_consts)
+        
+        # ---> INSERTION 2: Real-time TensorBoard Logging
+        writer.add_scalar('Metrics/MSE_Loss', mse_array[step].item(), step)
+        writer.add_scalar('Metrics/PSNR', psnr.item(), step)
 
-    # Adjust learning rate using a scheduler if applicable
-    if args.using_schedular:
-        if args.inr_model == 'incode' and 30 < step:
-            scheduler.step()
-        else:
-            scheduler.step()
+        if args.tb_hist_interval > 0 and (step % args.tb_hist_interval == 0 or step == args.niters - 1):
+            log_tensorboard_histograms(writer, model, step, activation_consts=current_consts)
+        
+        if current_consts.size > 0:
+            coef_flat = current_consts.flatten()
+            try:
+                # Split the flattened array into ACT_PARM chunks.
+                # Each chunk contains the values for all hidden layers for that specific parameter.
+                raw_splits = np.split(coef_flat, ACT_PARM)
+                
+                for idx, (p_name, p_range) in enumerate(parameter_ranges_dict.items()):
+                    for layer_idx, val in enumerate(raw_splits[idx]):
+                        # Apply the identical sigmoid scaling used in your plotting logic
+                        scaled_val = (1 / (1 + np.exp(-val))) * (p_range[1] - p_range[0]) + p_range[0]
+                        
+                        # Groups plots by parameter (e.g., "Params_T") and labels lines by layer
+                        writer.add_scalar(f'Params_{p_name}/Layer_{layer_idx+1}', scaled_val, step)
+            except ValueError:
+                # Safely bypass if shapes mismatch during the very first initialization step
+                pass
+        # -----------------------------------------------
 
-    # Prepare reconstructed image for visualization
+        pbar.set_description(f"step {step+1}/{args.niters} | PSNR {psnr:.2f} dB")
+        scheduler.step()
     imrec = rec[0, ...].reshape(H, W, 3).detach().cpu().numpy()
 
-    # Check if the current iteration's loss is the best so far
     if (mse_array[step] < best_loss) or (step == 0):
         best_loss = mse_array[step]
         best_flat_img = rec
         best_img = imrec
-        # best_img = (best_img - best_img.min()) / (best_img.max() - best_img.min())
-        best_epoch=step
+        best_epoch = step
 
-    # Display intermediate results at specified intervals
     if step % args.steps_til_summary == 0:
-        print("Epoch: {} | Total Loss: {:.5f} | PSNR: {:.4f}".format(step,
-                                                                     mse_array[step].item(),
-                                                                     psnr.item()))
+        current_mse = mse_array[step].item()
+        if current_mse < best_summary_loss:
+            best_summary_loss = current_mse
+            weight_save_path = os.path.join(save_path, f"{args.inr_model}_best_weights.pth")
+            torch.save(model.state_dict(), weight_save_path)
+
 
 print(f"Final PSNR: {psnr_values[-1]}")
-
 def get_np_psnr(image1, image2):
   loss = ((image1.astype(np.float32) - image2.astype(np.float32))**2).mean()
   return -10*np.log10(loss)
