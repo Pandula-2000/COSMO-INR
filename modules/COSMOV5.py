@@ -6,6 +6,12 @@ import torchvision.models.video as video
 import torchaudio
 from modules.utils import normalize, measure, psnr
 
+"""
+Model
+Raised_coseine * e^(A+Bx)
+[T], [C]
+Params: 1 + 2
+"""
 
 class MLP(torch.nn.Sequential):
     '''
@@ -63,29 +69,30 @@ class RaisedCosineImpulseResponseLayer(nn.Module):
         self.in_features = in_features
         self.out_features = out_features
 
-        dtype = torch.float if self.is_first else torch.cfloat
+        dtype = torch.float if self.is_first else torch.float
         self.linear = nn.Linear(in_features, out_features, bias=bias, dtype=dtype)
 
         nn.init.uniform_(self.linear.weight, -1/self.in_features, 1/self.in_features)  # Initialize weights (new method)
 
-    def forward(self, input, t0, c0):
+    def forward(self, input, t0, A, B):
         input = input.to(next(self.parameters()).device)  # Move input to correct device
         lin = self.linear(input)
 
-        if not self.is_first:
-            lin = lin / torch.abs(lin + self.eps)  # Normalize
+        # if not self.is_first:
+        #     lin = lin / torch.abs(lin + self.eps)  # Normalize
 
         f1 = (1 / t0) * torch.sinc(lin / t0) * torch.cos(torch.pi * self.beta0 * lin / t0)
         f2 = 1 - (2 * self.beta0 * lin / t0) ** 2 + self.eps
-        theta = 2 * torch.pi * c0 * lin * 1j
 
+        modulation = torch.exp(A+B*lin)
         rc = (f1 / f2)
-        out = rc * torch.exp(theta)
+        out = rc * modulation
 
-        if not self.is_first:
-            out = out / torch.abs(out + self.eps)
 
-        return out.real if self.out_real else out
+        # if not self.is_first:
+        #     out = out / torch.abs(out + self.eps)
+
+        return out
 
 class INR(nn.Module):
     def __init__(self, in_features, hidden_features, hidden_layers, activation_parameters, out_features, MLP_configs):
@@ -142,11 +149,6 @@ class INR(nn.Module):
             # Unpack the list into the layer's forward pass
             output = lyr(output, *layer_args) 
             
-        # If previous layers produced complex outputs, use the real part
-        # before feeding into the real-valued final linear layer.
-        if torch.is_complex(output):
-            output = output.real
-
-        output = self.final_linear(output)
+        output = self.final_linear(output).real
 
         return nn.Sigmoid()(output)

@@ -26,7 +26,7 @@ Params: 1 + 1
 
 image = "kodim20"
 
-NITERS = 50
+NITERS = 500
 STR = 5
 MODEL = "BandRC"
 LR = 9e-4
@@ -62,6 +62,8 @@ parser.add_argument('--maxpoints', type=int, default=256*256, help='Batch size')
 parser.add_argument('--niters', type=int, default=NITERS, help='Number if iterations')
 parser.add_argument('--steps_til_summary', type=int, default=STR, help='Number of steps till summary visualization')
 parser.add_argument('--tb_hist_interval', type=int, default=100, help='TensorBoard histogram logging interval in steps (<=0 disables)')
+parser.add_argument('--tau', type=float, default=40.0, help='Photon noise')
+parser.add_argument('--noise_snr', type=float, default=2.0, help='Readout noise')
 
 # INCODE Parameters
 parser.add_argument('--a_coef',type=float, default=0.1993, help='a coeficient')
@@ -107,11 +109,11 @@ else:
 time_array = torch.zeros(args.niters, device=device)
 
 save_name = f"{run_name}_{args.inr_model}"
-save_path = f"Results/image_recons/{save_name}"
+save_path = f"Results/image_denoising/{save_name}"
 os.makedirs(save_path, exist_ok=True)
 
 # Initialize TensorBoard Writer
-tb_log_dir = f"runs/image_recons/{save_name}"
+tb_log_dir = f"runs/image_denoising/{save_name}"
 writer = SummaryWriter(log_dir=tb_log_dir)
 # -----------------------------------------------
 
@@ -138,23 +140,28 @@ def log_tensorboard_histograms(tb_writer, model, step, activation_consts=None):
         )
 
 ## Loading Data
+import cv2
 im_RGB_gt = utils.normalize(plt.imread(args.input).astype(np.float32), True)
 im = im_RGB_gt
 H, W, _ = im.shape
+np.random.seed(0)
+im_noisy = utils.measure(im, args.noise_snr, args.tau).astype(np.float32)
+im_noisy_gt = utils.normalize(im_noisy, True).astype(np.float32)
+noisy_im = im_noisy_gt
 
 ### Model Configurations
 print(f"Running Model: {args.inr_model}")
 
 ### Harmonizer Configurations
 MLP_configs={
-    'task': 'image',
+    'task': 'denoising',
     'model': 'resnet34',
     'truncated_layer':5,
     'in_channels': 64,
     'hidden_channels': [64, 32, (ACT_PARM)*(args.hidden_layers+1)],
     'mlp_bias':0.3120,
     'activation_layer': nn.SiLU,
-    'GT': torch.tensor(im).to(device)[None,...].permute(0, 3, 1, 2),
+    'GT': torch.tensor(im_noisy_gt).to(device)[None,...].permute(0, 3, 1, 2),
     
     # Pass just the list of ranges to the INR class for unpacking
     'param_ranges': list(parameter_ranges_dict.values()) 
@@ -188,8 +195,9 @@ best_summary_loss = float('inf')
 
 # Generate coordinate grid
 coords = utils.get_coords(H, W, dim=2)[None, ...]
-gt = torch.tensor(im).reshape(H * W, 3)[None, ...].to(device)
-rec = torch.zeros_like(gt)
+gt_noisy = torch.tensor(im_noisy).reshape(H * W, 3)[None, ...].to(device)
+gt_clean = torch.tensor(im).reshape(H * W, 3)[None, ...].to(device)
+rec = torch.zeros_like(gt_noisy)
 
 
 pbar = tqdm(range(args.niters))
@@ -209,7 +217,7 @@ for step in pbar:
         with torch.no_grad():
             rec[:, b_indices, :] = model_output
 
-        output_loss = ((model_output - gt[:, b_indices, :])**2).mean()
+        output_loss = ((model_output - gt_noisy[:, b_indices, :])**2).mean()
 
         if args.inr_model == 'incode':
             a_coef, b_coef, c_coef, d_coef = coef[0]
@@ -228,7 +236,7 @@ for step in pbar:
     time_array[step] = time.time() - init_time
     
     with torch.no_grad():
-        mse_array[step] = ((gt - rec)**2).mean().item()
+        mse_array[step] = ((gt_clean - rec)**2).mean().item()
         psnr = -10*torch.log10(mse_array[step])
         psnr_values.append(psnr.item())
         
@@ -301,17 +309,14 @@ print(f"Loss: {rec_loss:.8f}, PSNR: {rec_psnr:.5f}")
 def sigmoid(x):
     return 1 / (1 + np.exp(-x))
 
-# Calculate required grid columns dynamically
-# 1 block for PSNR + 1 block per parameter
+num_top_plots = 3
 num_bottom_plots = 1 + ACT_PARM
-col_multiplier = 3 
-total_cols = num_bottom_plots * col_multiplier
+total_cols = num_top_plots * num_bottom_plots
 
-fig = plt.figure(figsize=(num_bottom_plots * 6, 12), dpi=500)
+fig = plt.figure(figsize=(max(num_top_plots, num_bottom_plots) * 6, 12), dpi=500)
 gs = gridspec.GridSpec(2, total_cols, figure=fig)
 
-# Top row division (split equally among GT, Reconstructed, Error)
-top_span = total_cols // 3
+top_span = total_cols // num_top_plots
 
 # 1. Ground Truth Image
 ax_gt = fig.add_subplot(gs[0, 0:top_span])
@@ -319,49 +324,43 @@ ax_gt.imshow(np.clip(im, 0, 1))
 ax_gt.set_title("Ground Truth Image")
 ax_gt.axis('off')
 
-# 2. Reconstructed Image
-ax_img = fig.add_subplot(gs[0, top_span:2*top_span])
+# 2. Noisy Image
+ax_noisy = fig.add_subplot(gs[0, top_span:2*top_span])
+ax_noisy.imshow(np.clip(noisy_im, 0, 1))
+noisy_psnr = -10*np.log10(((noisy_im - im)**2).mean())
+ax_noisy.set_title(f"Noisy Image (PSNR: {noisy_psnr:.2f} dB)")
+ax_noisy.axis('off')
+
+# 3. Reconstructed Image
+ax_img = fig.add_subplot(gs[0, 2*top_span:3*top_span])
 ax_img.imshow(np.clip(best_img, 0, 1))
 ax_img.set_title(f"Reconstructed Image (PSNR: {rec_psnr:.2f} dB)")
 ax_img.axis('off')
 
-# 3. Error Plot
-ax_err = fig.add_subplot(gs[0, 2*top_span:total_cols])
-error_map = np.abs(best_img.astype(np.float32) - im.astype(np.float32)).mean(axis=-1)
-err_im = ax_err.imshow(error_map, cmap='hot')
-ax_err.set_title("Error Plot")
-ax_err.axis('off')
-fig.colorbar(err_im, ax=ax_err, fraction=0.046, pad=0.04)
+bottom_span = total_cols // num_bottom_plots
 
-# 4. PSNR Curve (First slot of bottom row)
-ax_psnr = fig.add_subplot(gs[1, 0:col_multiplier])
-ax_psnr.plot(range(args.niters), psnr_values, color='#2ca02c') 
-ax_psnr.set_title("PSNR Convergence")
-ax_psnr.set_xlabel("Epochs")
-ax_psnr.set_ylabel("PSNR (dB)")
-ax_psnr.grid(True, linestyle="--", alpha=0.6)
+# 4. Loss Curve
+ax_loss = fig.add_subplot(gs[1, 0:bottom_span])
+ax_loss.plot(range(args.niters), mse_array.cpu().numpy(), color='#1f77b4') 
+ax_loss.set_title("Loss Convergence (MSE)")
+ax_loss.set_xlabel("Epochs")
+ax_loss.set_ylabel("MSE Loss")
+ax_loss.grid(True, linestyle="--", alpha=0.6)
 
 # 5. Dynamic Activation Parameters
-processed_params = {} # Dictionary to store scaled data for logging
-
+processed_params = {}
 if len(consts) > 0:
     coef = np.array(consts).squeeze()
     if coef.ndim > 2:
         coef = coef.reshape(coef.shape[0], -1)
-        
-    # Split the raw data array dynamically into N equal parts
-    raw_splits = np.split(coef, ACT_PARM, axis=1)
     
-    # Iterate through the configuration dictionary and map the data
+    raw_splits = np.split(coef, ACT_PARM, axis=1)
     for idx, (p_name, p_range) in enumerate(parameter_ranges_dict.items()):
-        
-        # Scale via sigmoid and predefined bounds
         scaled_data = sigmoid(raw_splits[idx]) * (p_range[1] - p_range[0]) + p_range[0]
         processed_params[p_name] = scaled_data
         
-        # Plotting
-        start_col = (idx + 1) * col_multiplier
-        end_col = start_col + col_multiplier
+        start_col = (idx + 1) * bottom_span
+        end_col = start_col + bottom_span
         ax_p = fig.add_subplot(gs[1, start_col:end_col])
         
         for i in range(scaled_data.shape[1]):
@@ -373,9 +372,8 @@ if len(consts) > 0:
         ax_p.set_xlabel("Epochs")
         ax_p.set_ylabel("Values")
         ax_p.legend(fontsize='small')
-
 else:
-    ax_params = fig.add_subplot(gs[1, col_multiplier:total_cols])
+    ax_params = fig.add_subplot(gs[1, bottom_span:2*bottom_span])
     ax_params.set_title("Activation Params (N/A)")
     ax_params.axis('off')
 

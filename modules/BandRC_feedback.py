@@ -71,8 +71,11 @@ class RaisedCosineImpulseResponseLayer(nn.Module):
     def forward(self, input, t0, c0):
         input = input.to(next(self.parameters()).device)  # Move input to correct device
         lin = self.linear(input)
+        global out_first
 
         if not self.is_first:
+            lamda = 0.5  # Feedback strength
+            lin= lin+ lamda*out_first
             lin = lin / torch.abs(lin + self.eps)  # Normalize
 
         f1 = (1 / t0) * torch.sinc(lin / t0) * torch.cos(torch.pi * self.beta0 * lin / t0)
@@ -82,8 +85,14 @@ class RaisedCosineImpulseResponseLayer(nn.Module):
         rc = (f1 / f2)
         out = rc * torch.exp(theta)
 
+        
+        if self.is_first:
+            
+            out_first = out
+        
         if not self.is_first:
             out = out / torch.abs(out + self.eps)
+            
 
         return out.real if self.out_real else out
 

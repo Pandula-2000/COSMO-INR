@@ -6,6 +6,13 @@ import torchvision.models.video as video
 import torchaudio
 from modules.utils import normalize, measure, psnr
 
+"""
+Model
+Raised_coseine * e^(j.C.x) <-- COSMO
+[T], [C]
+Params: 1 + 1
+"""
+
 
 class MLP(torch.nn.Sequential):
     '''
@@ -68,7 +75,7 @@ class RaisedCosineImpulseResponseLayer(nn.Module):
 
         nn.init.uniform_(self.linear.weight, -1/self.in_features, 1/self.in_features)  # Initialize weights (new method)
 
-    def forward(self, input, t0, c0):
+    def forward(self, input, t0, C):
         input = input.to(next(self.parameters()).device)  # Move input to correct device
         lin = self.linear(input)
 
@@ -77,10 +84,11 @@ class RaisedCosineImpulseResponseLayer(nn.Module):
 
         f1 = (1 / t0) * torch.sinc(lin / t0) * torch.cos(torch.pi * self.beta0 * lin / t0)
         f2 = 1 - (2 * self.beta0 * lin / t0) ** 2 + self.eps
-        theta = 2 * torch.pi * c0 * lin * 1j
-
+        theta = 2 * torch.pi * C * lin * 1j
+        modulation = torch.exp(theta)
         rc = (f1 / f2)
-        out = rc * torch.exp(theta)
+        out = rc * modulation
+
 
         if not self.is_first:
             out = out / torch.abs(out + self.eps)
@@ -107,7 +115,7 @@ class INR(nn.Module):
         self.gap = nn.AdaptiveAvgPool1d(1)
         self.nonlin = RaisedCosineImpulseResponseLayer
 
-        dtype = torch.float
+        dtype = torch.cfloat
 
         self.net = nn.ModuleList()  # Use ModuleList for proper CUDA movement
         self.net.append(self.nonlin(in_features, hidden_features, is_first=True))
@@ -142,11 +150,9 @@ class INR(nn.Module):
             # Unpack the list into the layer's forward pass
             output = lyr(output, *layer_args) 
             
-        # If previous layers produced complex outputs, use the real part
-        # before feeding into the real-valued final linear layer.
-        if torch.is_complex(output):
-            output = output.real
-
+        #output = self.final_linear(output).real
         output = self.final_linear(output)
 
-        return nn.Sigmoid()(output)
+        output = torch.sigmoid(output.real) + 1j * torch.sigmoid(output.imag)
+        return output
+        #return nn.Sigmoid()(output)
